@@ -11,7 +11,7 @@ bool createScreenSources(obs_scene_t* scene, const std::vector<MonitorInfo>& mon
     std::vector<obs_source_t*>& screenCaptures,
     obs_source_t** displaySource,
     const Reporter& /*reportError*/, const Logger& logger) {
-    logger->info("RecordingEngine",
+    logger->debug("RecordingEngine",
         "Creating monitor capture sources for " + std::to_string(monitors.size()) + " monitor(s)");
 
     MonitorBounds bounds;
@@ -39,8 +39,8 @@ bool createScreenSources(obs_scene_t* scene, const std::vector<MonitorInfo>& mon
         addFallbackDisplaySource(scene, "monitor_capture", displaySource, sceneItems, logger);
     }
 
-    logger->info("RecordingEngine", "Total screen capture sources: " +
-                                        std::to_string(screenCaptures.size() + (*displaySource != nullptr ? 1 : 0)));
+    logger->debug("RecordingEngine", "Total screen capture sources: " +
+                                         std::to_string(screenCaptures.size() + (*displaySource != nullptr ? 1 : 0)));
     return true;
 }
 
