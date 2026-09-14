@@ -654,7 +654,7 @@ private:
             if (manifest.contains("s3ManifestUploadUrl")) {
                 uploadData["s3ManifestUploadUrl"] = manifest["s3ManifestUploadUrl"];
             }
-            logger_->info("Agent", "Loaded upload URLs from manifest: " + manifestPath);
+            logger_->debug("Agent", "Loaded upload URLs from manifest: " + manifestPath);
         } else {
             logger_->warning("Agent", "Manifest unreadable: " + manifestPath + " (will use config)");
         }

@@ -54,7 +54,7 @@ bool RecordingSession::start(const RecordingConfig& config) {
 
     std::string outputPath = fileManager->createOutputFile(sessionId_, config.outputFormat);
     if (context_->getLogger()) {
-        context_->getLogger()->info("RecordingSession", "Recording output will be saved to: " + outputPath);
+        context_->getLogger()->debug("RecordingSession", "Recording output will be saved to: " + outputPath);
     }
 
     fsm::StartRecordingEvent event;

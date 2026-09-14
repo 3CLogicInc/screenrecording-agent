@@ -2,7 +2,7 @@
 
 This snapshot bundles the third-party components listed below. Each is used
 under its own license; the 3CLogic-authored files in this repository are
-licensed GPL-2.0-or-later (see `LICENSE` and `COPYING.note.md`).
+licensed GPL-2.0-or-later (see `LICENSE` and the "License and source offer" section of `README.md`).
 
 ---
 
@@ -32,7 +32,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ```
 
 The full GPL-2.0 text is in `LICENSE`. The binary the agent links against is
-built from the fork described in `COPYING.note.md`, which also states where to
+built from the fork described in `README.md` under "License and source offer", which also states where to
 obtain its corresponding source.
 
 ---

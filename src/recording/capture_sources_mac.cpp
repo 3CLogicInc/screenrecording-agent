@@ -11,7 +11,7 @@ bool createScreenSources(obs_scene_t* scene, const std::vector<MonitorInfo>& mon
     std::vector<obs_source_t*>& screenCaptures,
     obs_source_t** displaySource,
     const Reporter& reportError, const Logger& logger) {
-    logger->info("RecordingEngine",
+    logger->debug("RecordingEngine",
         "Creating screen_capture sources for " + std::to_string(monitors.size()) + " monitor(s)");
 
     MonitorBounds bounds;

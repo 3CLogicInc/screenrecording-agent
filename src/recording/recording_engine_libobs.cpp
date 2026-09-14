@@ -153,7 +153,7 @@ bool RecordingEngine::initializeOBSCore() {
     std::scoped_lock lock(mutex_);
 
     if (obsCoreInitialized_) {
-        logger_->info("RecordingEngine", "OBS core already initialized (singleton)");
+        logger_->debug("RecordingEngine", "OBS core already initialized (singleton)");
         return true;
     }
 
@@ -219,14 +219,14 @@ bool RecordingEngine::initialize(const RecordingConfig& config) {
 }
 
 bool RecordingEngine::initializeOBS() {
-    logger_->info("RecordingEngine", "Initializing OBS core...");
+    logger_->debug("RecordingEngine", "Initializing OBS core...");
 
 #ifdef _WIN32
-    logger_->info("RecordingEngine", "Initializing DPI awareness...");
+    logger_->debug("RecordingEngine", "Initializing DPI awareness...");
     if (!initializeDPIAwareness()) {
         reportWarning("Failed to initialize DPI awareness");
     } else {
-        logger_->info("RecordingEngine", "DPI awareness initialized");
+        logger_->debug("RecordingEngine", "DPI awareness initialized");
     }
 
     // Paths must be set before obs_startup, use forward slashes, and end with a trailing slash; root = OBS_PATH or cwd.
@@ -234,12 +234,12 @@ bool RecordingEngine::initializeOBS() {
         std::string obsRoot;
         if (const char* obsPath = std::getenv("OBS_PATH"); obsPath != nullptr) {
             obsRoot = obsPath;
-            logger_->info("RecordingEngine", "Using OBS_PATH env var: " + obsRoot);
+            logger_->debug("RecordingEngine", "Using OBS_PATH env var: " + obsRoot);
         } else {
             std::array<char, MAX_PATH> currentPath{};
             GetCurrentDirectoryA(MAX_PATH, currentPath.data());
             obsRoot = currentPath.data();
-            logger_->info("RecordingEngine", "Current directory: " + obsRoot);
+            logger_->debug("RecordingEngine", "Current directory: " + obsRoot);
         }
         std::replace(obsRoot.begin(), obsRoot.end(), '\\', '/');
 
@@ -247,8 +247,8 @@ bool RecordingEngine::initializeOBS() {
         const std::string modulePath = obsRoot + "/obs-plugins/64bit";
         const std::string moduleDataPath = obsRoot + "/data/obs-plugins/%module%";
 
-        logger_->info("RecordingEngine", "Setting libobs data path: " + libobsDataPath);
-        logger_->info("RecordingEngine", "Setting OBS module path: " + modulePath);
+        logger_->debug("RecordingEngine", "Setting libobs data path: " + libobsDataPath);
+        logger_->debug("RecordingEngine", "Setting OBS module path: " + modulePath);
 
         obs_add_data_path(libobsDataPath.c_str());
         obs_add_module_path(modulePath.c_str(), moduleDataPath.c_str());
@@ -262,8 +262,8 @@ bool RecordingEngine::initializeOBS() {
         const std::string moduleDataPath = obsRoot + "/PlugIns/%module%.plugin/Contents/Resources";
         const std::string libobsDataPath = obsRoot + "/Frameworks/libobs.framework/Resources/";
 
-        logger_->info("RecordingEngine", "OBS root: " + obsRoot);
-        logger_->info("RecordingEngine", "Setting OBS module path: " + modulePath);
+        logger_->debug("RecordingEngine", "OBS root: " + obsRoot);
+        logger_->debug("RecordingEngine", "Setting OBS module path: " + modulePath);
 
         obs_add_data_path(libobsDataPath.c_str());
         obs_add_module_path(modulePath.c_str(), moduleDataPath.c_str());
@@ -298,7 +298,7 @@ bool RecordingEngine::initializeOBS() {
         }
         logger_->info("RecordingEngine", "OBS startup successful");
     } else {
-        logger_->info("RecordingEngine", "OBS already initialized");
+        logger_->debug("RecordingEngine", "OBS already initialized");
     }
 
     logger_->debug("RecordingEngine", "Detecting monitors...");
@@ -338,11 +338,11 @@ bool RecordingEngine::initializeOBS() {
 #ifdef _WIN32
     // D3D11 captures faster than OpenGL on Windows; OpenGL is the fallback below.
     ovi.graphics_module = "libobs-d3d11";
-    logger_->info("RecordingEngine", "Attempting Direct3D 11 graphics module...");
+    logger_->debug("RecordingEngine", "Attempting Direct3D 11 graphics module...");
 #else
     const std::string graphicsModulePath = findGraphicsModuleMac(obsRuntimeRootMac());
     ovi.graphics_module = graphicsModulePath.c_str();
-    logger_->info("RecordingEngine", "Using graphics module: " + graphicsModulePath);
+    logger_->debug("RecordingEngine", "Using graphics module: " + graphicsModulePath);
 #endif
     MonitorBounds bounds;
     if (getCompositeBounds(monitors_, bounds)) {
@@ -366,7 +366,7 @@ bool RecordingEngine::initializeOBS() {
         "Output resolution: " + std::to_string(out.width) + "x" + std::to_string(out.height) +
             " (canvas " + std::to_string(ovi.base_width) + "x" + std::to_string(ovi.base_height) + ")");
     if (config_.video.width != 0 && config_.video.width != out.width) {
-        logger_->info("RecordingEngine",
+        logger_->debug("RecordingEngine",
             "Configured video.width=" + std::to_string(config_.video.width) +
                 " is informational only; output width " + std::to_string(out.width) +
                 " follows the canvas aspect under the height cap");
@@ -457,7 +457,7 @@ bool RecordingEngine::initializeOBS() {
             reportError("Failed to load required modules");
             return false;
         }
-        logger_->info("RecordingEngine", "Required modules loaded successfully");
+        logger_->debug("RecordingEngine", "Required modules loaded successfully");
 #else
         logger_->info("RecordingEngine", "Loading OBS modules...");
         obs_load_all_modules();
@@ -468,25 +468,25 @@ bool RecordingEngine::initializeOBS() {
         modulesLoaded = true;
         logger_->info("RecordingEngine", "OBS modules initialized");
     } else {
-        logger_->info("RecordingEngine", "OBS modules already loaded, skipping");
+        logger_->debug("RecordingEngine", "OBS modules already loaded, skipping");
     }
 
     return true;
 }
 
 bool RecordingEngine::createSources() {
-    logger_->info("RecordingEngine", "Creating sources...");
+    logger_->debug("RecordingEngine", "Creating sources...");
 
     {
-        logger_->info("RecordingEngine", "=== Available source types ===");
+        logger_->debug("RecordingEngine", "=== Available source types ===");
         const char* sourceId = nullptr;
         size_t idx = 0;
         while (obs_enum_source_types(idx++, &sourceId)) {
             if (sourceId != nullptr) {
-                logger_->info("RecordingEngine", std::string("  Source type: ") + sourceId);
+                logger_->debug("RecordingEngine", std::string("  Source type: ") + sourceId);
             }
         }
-        logger_->info("RecordingEngine", "==============================");
+        logger_->debug("RecordingEngine", "==============================");
     }
 
     scene_ = obs_scene_create("MainScene");
@@ -494,7 +494,7 @@ bool RecordingEngine::createSources() {
         reportError("Failed to create scene");
         return false;
     }
-    logger_->info("RecordingEngine", "Scene created");
+    logger_->debug("RecordingEngine", "Scene created");
 
     const auto reportErrorFn = [this](const std::string& msg) { reportError(msg); };
     const auto reportWarningFn = [this](const std::string& msg) { reportWarning(msg); };
@@ -505,7 +505,7 @@ bool RecordingEngine::createSources() {
     }
 
     if (config_.audio.enabled) {
-        logger_->info("RecordingEngine", "Creating audio sources...");
+        logger_->debug("RecordingEngine", "Creating audio sources...");
         capture::createAudioSources(&audioSource_, &micSource_, reportWarningFn, logger_);
     }
 
@@ -628,12 +628,12 @@ bool RecordingEngine::captureSourcesHealthy() {
 }
 
 std::string RecordingEngine::detectBestVideoEncoder() {
-    logger_->info("RecordingEngine", "Detecting best available video encoder...");
+    logger_->debug("RecordingEngine", "Detecting best available video encoder...");
 
     const auto available = getAvailableEncoderTypes();
 
     {
-        logger_->info("RecordingEngine", "Scanning for available H264/H265 video encoders:");
+        logger_->debug("RecordingEngine", "Scanning for available H264/H265 video encoders:");
         int encoderCount = 0;
         for (const auto& encoderId : available) {
             const char* codec = obs_get_encoder_codec(encoderId.c_str());
@@ -867,7 +867,7 @@ bool RecordingEngine::createEncoder() {
 }
 
 bool RecordingEngine::createOutput() {
-    logger_->info("RecordingEngine", "Creating output...");
+    logger_->debug("RecordingEngine", "Creating output...");
 
     if (outputPath_.empty()) {
         reportError("Output path is empty");
@@ -878,11 +878,11 @@ bool RecordingEngine::createOutput() {
     logger_->debug("RecordingEngine", "Output format: " + config_.outputFormat);
 
     {
-        logger_->info("RecordingEngine", "Enumerating available output types:");
+        logger_->debug("RecordingEngine", "Enumerating available output types:");
         size_t idx = 0;
         const char* outputId = nullptr;
         while (obs_enum_output_types(idx++, &outputId)) {
-            logger_->info("RecordingEngine", std::string("  Output type: ") + outputId);
+            logger_->debug("RecordingEngine", std::string("  Output type: ") + outputId);
         }
     }
 
@@ -920,7 +920,7 @@ bool RecordingEngine::createOutput() {
     signal_handler_connect(handler, "stop", onStopSignal, this);
     signal_handler_connect(handler, "stopping", onStoppingSignal, this);
 
-    logger_->info("RecordingEngine", "Output created successfully");
+    logger_->debug("RecordingEngine", "Output created successfully");
     return true;
 }
 
@@ -1113,7 +1113,7 @@ bool RecordingEngine::stop() {
     }
 
     if (obsInitialized_.load()) {
-        logger_->info("RecordingEngine", "Releasing recording session resources");
+        logger_->debug("RecordingEngine", "Releasing recording session resources");
         releaseOBS();
         obsInitialized_.store(false);
     }
