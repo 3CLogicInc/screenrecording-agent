@@ -42,6 +42,18 @@ void sendReady(UnixSocketClient& client) {
     ready.action = "ready";
     client.sendMessage(ready);
 }
+
+struct AgentSlot {
+    std::atomic<ClientId> client{INVALID_CLIENT};
+
+    explicit AgentSlot(IIpcServer& server) {
+        server.setAgentResolver([this] { return client.load(); });
+        server.setClientDisconnectHandler([this](const ClientId gone) {
+            ClientId expected = gone;
+            client.compare_exchange_strong(expected, INVALID_CLIENT);
+        });
+    }
+};
 #endif
 
 }
@@ -126,10 +138,11 @@ TEST_CASE("client ready reaches server handler; server command reaches client") 
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     std::atomic<bool> gotReady{false};
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
         if (m.action == "ready") {
-            server.registerAgent(client);
+            agent.client = client;
             gotReady = true;
         }
     });
@@ -165,8 +178,9 @@ TEST_CASE("sendToAgentAndWait returns the agent's response") {
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
-        if (m.action == "ready") server.registerAgent(client);
+        if (m.action == "ready") agent.client = client;
     });
     REQUIRE(server.start());
 
@@ -204,8 +218,9 @@ TEST_CASE("sendToAgentAndWait fails fast when the agent disconnects mid-wait") {
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
-        if (m.action == "ready") server.registerAgent(client);
+        if (m.action == "ready") agent.client = client;
         // deliberately never respond to commands
     });
     REQUIRE(server.start());
@@ -242,8 +257,9 @@ TEST_CASE("spontaneous RESPONSE (no requestId) cannot satisfy sendToAgentAndWait
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
-        if (m.action == "ready") server.registerAgent(client);
+        if (m.action == "ready") agent.client = client;
     });
     REQUIRE(server.start());
 
@@ -294,10 +310,11 @@ TEST_CASE("large payload under the 1 MiB frame cap round-trips over the socket")
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     std::atomic<size_t> rxLen{0};
     server.setMessageHandler([&](const IPCMessage& m, ClientId c) {
         if (m.action == "ready") {
-            server.registerAgent(c);
+            agent.client = c;
         } else {
             rxLen = m.payload.size();
         }

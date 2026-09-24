@@ -25,6 +25,7 @@ public:
     void stop() override;
 
     bool sendMessage(ClientId client, const IPCMessage& message) override;
+    [[nodiscard]] std::uint32_t clientProcessId(ClientId client) const override;
 
 private:
     void serverThread();

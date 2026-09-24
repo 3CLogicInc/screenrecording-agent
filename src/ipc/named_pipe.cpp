@@ -71,6 +71,18 @@ bool NamedPipeServer::sendMessage(const ClientId client, const IPCMessage& messa
     return writeToPipe(*pipe, message);
 }
 
+std::uint32_t NamedPipeServer::clientProcessId(const ClientId client) const {
+    const auto pipe = connections_.lookup(client);
+    if (!pipe || *pipe == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    ULONG pid = 0;
+    if (GetNamedPipeClientProcessId(*pipe, &pid) == 0) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>(pid);
+}
+
 bool NamedPipeServer::writeToPipe(const HANDLE clientPipe, const IPCMessage& message) {
     if (clientPipe == INVALID_HANDLE_VALUE) {
         return false;
@@ -187,6 +199,7 @@ void NamedPipeServer::serverThread() {
 }
 
 void NamedPipeServer::clientThread(const HANDLE hPipe, const ClientId clientId) {
+    onClientConnected(clientId);
     char buffer[PIPE_BUFFER_SIZE];
 
     OVERLAPPED overlapped = {0};

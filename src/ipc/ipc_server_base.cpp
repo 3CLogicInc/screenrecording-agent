@@ -9,30 +9,26 @@ void IpcServerBase::setMessageHandler(const MessageHandler& handler) {
     messageHandler_ = handler;
 }
 
-void IpcServerBase::registerAgent(const ClientId client) {
+void IpcServerBase::setAgentResolver(std::function<ClientId()> resolver) {
     std::scoped_lock lock(agentMutex_);
-    connectedAgent_ = client;
+    agentResolver_ = std::move(resolver);
 }
 
-void IpcServerBase::setAgentDisconnectHandler(const std::function<void()>& handler) {
-    agentDisconnectHandler_ = handler;
-}
-
-void IpcServerBase::unregisterAgent(const ClientId client) {
-    std::scoped_lock lock(agentMutex_);
-    if (connectedAgent_ == client) {
-        connectedAgent_ = INVALID_CLIENT;
-    }
+void IpcServerBase::setClientDisconnectHandler(std::function<void(ClientId)> handler) {
+    clientDisconnectHandler_ = std::move(handler);
 }
 
 bool IpcServerBase::hasConnectedAgent() const {
-    std::scoped_lock lock(agentMutex_);
-    return connectedAgent_ != INVALID_CLIENT;
+    return connectedAgent() != INVALID_CLIENT;
 }
 
 ClientId IpcServerBase::connectedAgent() const {
-    std::scoped_lock lock(agentMutex_);
-    return connectedAgent_;
+    std::function<ClientId()> resolver;
+    {
+        std::scoped_lock lock(agentMutex_);
+        resolver = agentResolver_;
+    }
+    return resolver ? resolver() : INVALID_CLIENT;
 }
 
 bool IpcServerBase::sendToAgent(const IPCMessage& message) {
@@ -141,24 +137,40 @@ void IpcServerBase::handleIncomingMessage(const IPCMessage& message, const Clien
     }
 }
 
+void IpcServerBase::onClientConnected(const ClientId client) {
+    std::scoped_lock lock(clientsMutex_);
+    liveClients_.insert(client);
+}
+
+bool IpcServerBase::waitForClientDisconnect(const ClientId client,
+    const std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(clientsMutex_);
+    return clientsCV_.wait_for(lock, timeout,
+        [this, client] { return liveClients_.count(client) == 0; });
+}
+
+bool IpcServerBase::waitForAgentDisconnect(const std::chrono::milliseconds timeout) {
+    const ClientId agent = connectedAgent();
+    if (agent == INVALID_CLIENT) {
+        return true;
+    }
+    return waitForClientDisconnect(agent, timeout);
+}
+
 void IpcServerBase::onClientDisconnected(const ClientId client) {
-    bool wasRegisteredAgent = false;
+    if (clientDisconnectHandler_) {
+        clientDisconnectHandler_(client);
+    }
+
     {
-        std::scoped_lock lock(agentMutex_);
-        if (connectedAgent_ == client) {
-            connectedAgent_ = INVALID_CLIENT;
-            wasRegisteredAgent = true;
-        }
+        std::scoped_lock lock(clientsMutex_);
+        liveClients_.erase(client);
+        clientsCV_.notify_all();
     }
 
     {
         std::scoped_lock lock(responseMutex_);
         responseCV_.notify_all();
-    }
-
-    // After the waiter wakeup, never before: the handler may join a thread that is itself parked in sendToAgentAndWait().
-    if (wasRegisteredAgent && agentDisconnectHandler_) {
-        agentDisconnectHandler_();
     }
 }
 
