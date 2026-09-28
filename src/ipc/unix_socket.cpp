@@ -269,6 +269,7 @@ void UnixSocketServer::acceptLoop() {
 }
 
 void UnixSocketServer::readerThread(const int fd, const ClientId clientId) {
+    onClientConnected(clientId);
     std::string payload;
 
     while (isRunning()) {

@@ -9,6 +9,30 @@ namespace screenrec {
 namespace ipc {
 
 constexpr DWORD PIPE_BUFFER_SIZE = 65536;
+constexpr DWORD PIPE_WRITE_TIMEOUT_MS = 30000;
+
+namespace {
+
+bool awaitOverlapped(const HANDLE pipe, const HANDLE stopEvent, OVERLAPPED& overlapped,
+    const BOOL started, const DWORD timeoutMs, DWORD& bytes) {
+    if (started) {
+        return GetOverlappedResult(pipe, &overlapped, &bytes, FALSE) != 0;
+    }
+    if (GetLastError() != ERROR_IO_PENDING) {
+        return false;
+    }
+
+    const HANDLE handles[2] = {stopEvent, overlapped.hEvent};
+    if (WaitForMultipleObjects(2, handles, FALSE, timeoutMs) == WAIT_OBJECT_0 + 1) {
+        return GetOverlappedResult(pipe, &overlapped, &bytes, FALSE) != 0;
+    }
+
+    CancelIoEx(pipe, &overlapped);
+    GetOverlappedResult(pipe, &overlapped, &bytes, TRUE);
+    return false;
+}
+
+}
 
 NamedPipeServer::NamedPipeServer(const std::string& pipeName)
     : pipeName_("\\\\.\\pipe\\" + pipeName),
@@ -69,6 +93,18 @@ bool NamedPipeServer::sendMessage(const ClientId client, const IPCMessage& messa
         return false;
     }
     return writeToPipe(*pipe, message);
+}
+
+std::uint32_t NamedPipeServer::clientProcessId(const ClientId client) const {
+    const auto pipe = connections_.lookup(client);
+    if (!pipe || *pipe == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    ULONG pid = 0;
+    if (GetNamedPipeClientProcessId(*pipe, &pid) == 0) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>(pid);
 }
 
 bool NamedPipeServer::writeToPipe(const HANDLE clientPipe, const IPCMessage& message) {
@@ -187,6 +223,7 @@ void NamedPipeServer::serverThread() {
 }
 
 void NamedPipeServer::clientThread(const HANDLE hPipe, const ClientId clientId) {
+    onClientConnected(clientId);
     char buffer[PIPE_BUFFER_SIZE];
 
     OVERLAPPED overlapped = {0};
@@ -282,11 +319,15 @@ HANDLE NamedPipeServer::createPipeInstance() const {
 }
 
 NamedPipeClient::NamedPipeClient(const std::string& pipeName)
-    : pipeName_("\\\\.\\pipe\\" + pipeName), hPipe_(INVALID_HANDLE_VALUE) {
+    : pipeName_("\\\\.\\pipe\\" + pipeName), hPipe_(INVALID_HANDLE_VALUE),
+      hStopEvent_(CreateEvent(nullptr, TRUE, FALSE, nullptr)) {
 }
 
 NamedPipeClient::~NamedPipeClient() {
     disconnect();
+    if (hStopEvent_ != nullptr) {
+        CloseHandle(hStopEvent_);
+    }
 }
 
 bool NamedPipeClient::connect(int timeoutMs) {
@@ -294,32 +335,40 @@ bool NamedPipeClient::connect(int timeoutMs) {
         return true;
     }
 
+    if (hStopEvent_ == nullptr) {
+        return false;
+    }
+
     if (!WaitNamedPipeA(pipeName_.c_str(), timeoutMs)) {
         return false;
     }
 
-    hPipe_ = CreateFileA(
+    const HANDLE pipe = CreateFileA(
         pipeName_.c_str(),
         GENERIC_READ | GENERIC_WRITE,
         0,
         NULL,
         OPEN_EXISTING,
-        0,
+        FILE_FLAG_OVERLAPPED,
         NULL);
 
-    if (hPipe_ == INVALID_HANDLE_VALUE) {
+    if (pipe == INVALID_HANDLE_VALUE) {
         return false;
     }
 
     DWORD mode = PIPE_READMODE_MESSAGE;
 
-    if (const BOOL success = SetNamedPipeHandleState(hPipe_, &mode, nullptr, nullptr);
+    if (const BOOL success = SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
         !success) {
-        CloseHandle(hPipe_);
-        hPipe_ = INVALID_HANDLE_VALUE;
+        CloseHandle(pipe);
         return false;
     }
 
+    ResetEvent(hStopEvent_);
+    {
+        std::scoped_lock lock(sendMutex_);
+        hPipe_ = pipe;
+    }
     connected_ = true;
     readerThread_ = std::thread(&NamedPipeClient::readerThread, this);
 
@@ -330,33 +379,50 @@ void NamedPipeClient::disconnect() {
     // Unconditional and idempotent: gating on connected_ would leak hPipe_ and leave readerThread_ joinable -> std::terminate().
     connected_ = false;
 
-    if (hPipe_ != INVALID_HANDLE_VALUE) {
-        // Unblock any ReadFile in progress on the reader thread before we join.
-        CancelIoEx(hPipe_, nullptr);
-        CloseHandle(hPipe_);
-        hPipe_ = INVALID_HANDLE_VALUE;
+    if (hStopEvent_ != nullptr) {
+        SetEvent(hStopEvent_);
     }
 
     if (readerThread_.joinable()) {
         readerThread_.join();
     }
+
+    std::scoped_lock lock(sendMutex_);
+    if (hPipe_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(hPipe_);
+        hPipe_ = INVALID_HANDLE_VALUE;
+    }
 }
 
 bool NamedPipeClient::sendMessage(const IPCMessage& message) {
-    if (!connected_ || hPipe_ == INVALID_HANDLE_VALUE) {
+    if (!connected_) {
+        return false;
+    }
+
+    std::scoped_lock lock(sendMutex_);
+    if (hPipe_ == INVALID_HANDLE_VALUE) {
         return false;
     }
 
     const std::string data = serializeMessage(message);
-    DWORD bytesWritten = 0;
 
-    const BOOL result = WriteFile(
+    OVERLAPPED overlapped = {0};
+    overlapped.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    if (overlapped.hEvent == nullptr) {
+        return false;
+    }
+
+    const BOOL started = WriteFile(
         hPipe_,
         data.c_str(),
         static_cast<DWORD>(data.size()),
-        &bytesWritten, nullptr);
+        nullptr, &overlapped);
 
-    return result && bytesWritten == data.size();
+    DWORD bytesWritten = 0;
+    const bool completed = awaitOverlapped(hPipe_, hStopEvent_, overlapped, started, PIPE_WRITE_TIMEOUT_MS, bytesWritten);
+    CloseHandle(overlapped.hEvent);
+
+    return completed && bytesWritten == data.size();
 }
 
 void NamedPipeClient::setMessageHandler(const MessageHandler& handler) {
@@ -366,16 +432,18 @@ void NamedPipeClient::setMessageHandler(const MessageHandler& handler) {
 void NamedPipeClient::readerThread() {
     char buffer[PIPE_BUFFER_SIZE];
 
-    while (connected_) {
-        DWORD bytesRead = 0;
-        const BOOL success = ReadFile(
+    OVERLAPPED overlapped = {0};
+    overlapped.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+
+    while (overlapped.hEvent != nullptr && connected_) {
+        const BOOL started = ReadFile(
             hPipe_,
             buffer,
             sizeof(buffer) - 1,
-            &bytesRead, nullptr);
+            nullptr, &overlapped);
 
-        if (!success || bytesRead == 0) {
-            connected_ = false;
+        DWORD bytesRead = 0;
+        if (!awaitOverlapped(hPipe_, hStopEvent_, overlapped, started, INFINITE, bytesRead) || bytesRead == 0) {
             break;
         }
 
@@ -387,6 +455,12 @@ void NamedPipeClient::readerThread() {
         if (messageHandler_) {
             messageHandler_(message);
         }
+    }
+
+    connected_ = false;
+
+    if (overlapped.hEvent != nullptr) {
+        CloseHandle(overlapped.hEvent);
     }
 }
 

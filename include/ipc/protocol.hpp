@@ -36,6 +36,8 @@ inline constexpr const char* ERR_ALREADY_RECORDING = "already_recording";
 inline constexpr const char* ERR_SESSION_CONFLICT = "session_conflict";
 inline constexpr const char* ERR_NO_ACTIVE_SESSION = "no_active_session";
 
+inline constexpr const char* SHUTDOWN_REASON_KEY = "reason";
+
 struct ReadyPayload {
     int protocolVersion = 1;
     std::string agentVersion;

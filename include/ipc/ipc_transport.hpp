@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -25,14 +26,19 @@ public:
     virtual void setMessageHandler(const MessageHandler& handler) = 0;
     virtual bool sendMessage(ClientId client, const IPCMessage& message) = 0;
 
-    virtual void registerAgent(ClientId client) = 0;
-    virtual void unregisterAgent(ClientId client) = 0;
+    [[nodiscard]] virtual std::uint32_t clientProcessId(ClientId client) const {
+        (void)client;
+        return 0;
+    }
+
+    virtual bool waitForClientDisconnect(ClientId client, std::chrono::milliseconds timeout) = 0;
+    virtual bool waitForAgentDisconnect(std::chrono::milliseconds timeout) = 0;
+
     [[nodiscard]] virtual bool hasConnectedAgent() const = 0;
+    virtual void setAgentResolver(std::function<ClientId()> resolver) = 0;
 
     // Runs on the transport reader thread; the handler must not call back into sendToAgentAndWait().
-    virtual void setAgentDisconnectHandler(const std::function<void()>& handler) {
-        (void)handler;
-    }
+    virtual void setClientDisconnectHandler(std::function<void(ClientId)> handler) = 0;
 
     virtual bool sendToAgent(const IPCMessage& message) = 0;
     virtual bool sendToAgentAndWait(const IPCMessage& message, IPCMessage& response,

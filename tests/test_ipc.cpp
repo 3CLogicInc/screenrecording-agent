@@ -15,6 +15,12 @@
 #ifndef _WIN32
 #include "ipc/unix_socket.hpp"
 #include <unistd.h>
+#else
+#include "ipc/named_pipe.hpp"
+#include <future>
+#include <mutex>
+#include <set>
+#include <vector>
 #endif
 
 using namespace screenrec::ipc;
@@ -31,16 +37,71 @@ bool waitUntil(Pred pred, int maxMs = 2000) {
     return pred();
 }
 
+IPCMessage readyMessage() {
+    IPCMessage ready;
+    ready.type = MessageType::RESPONSE;
+    ready.action = "ready";
+    return ready;
+}
+
+void sendReady(IIpcClient& client) {
+    client.sendMessage(readyMessage());
+}
+
+struct AgentSlot {
+    std::atomic<ClientId> client{INVALID_CLIENT};
+
+    explicit AgentSlot(IIpcServer& server) {
+        server.setAgentResolver([this] { return client.load(); });
+        server.setClientDisconnectHandler([this](const ClientId gone) {
+            ClientId expected = gone;
+            client.compare_exchange_strong(expected, INVALID_CLIENT);
+        });
+    }
+};
+
 #ifndef _WIN32
 std::string tempSocketPath(const char* tag) {
     return std::string("/tmp/sr_test_") + tag + "_" + std::to_string(::getpid()) + ".sock";
 }
+#else
+std::string tempPipeName(const char* tag) {
+    return std::string("sr_test_") + tag + "_" + std::to_string(GetCurrentProcessId());
+}
 
-void sendReady(UnixSocketClient& client) {
-    IPCMessage ready;
-    ready.type = MessageType::RESPONSE;
-    ready.action = "ready";
-    client.sendMessage(ready);
+bool tokenHasSid(const WELL_KNOWN_SID_TYPE type) {
+    BYTE sid[SECURITY_MAX_SID_SIZE];
+    DWORD size = sizeof(sid);
+    BOOL member = FALSE;
+    return CreateWellKnownSid(type, nullptr, sid, &size) != 0 &&
+           CheckTokenMembership(nullptr, sid, &member) != 0 && member != FALSE;
+}
+
+bool pipeAclAdmitsThisProcess() {
+    const bool admitted = tokenHasSid(WinLocalSystemSid) ||
+                          tokenHasSid(WinBuiltinAdministratorsSid) ||
+                          tokenHasSid(WinInteractiveSid);
+    if (!admitted) {
+        MESSAGE("skipped: pipe DACL admits only SYSTEM, Administrators and interactive users");
+    }
+    return admitted;
+}
+
+template <typename Fn>
+std::optional<bool> runWithDeadline(IIpcClient& client, Fn fn, const int maxMs = 2000) {
+    std::promise<bool> done;
+    std::future<bool> result = done.get_future();
+    std::thread worker([&] { done.set_value(fn()); });
+    const bool finished =
+        result.wait_for(std::chrono::milliseconds(maxMs)) == std::future_status::ready;
+    if (!finished) {
+        client.disconnect();
+    }
+    worker.join();
+    if (!finished) {
+        return std::nullopt;
+    }
+    return result.get();
 }
 #endif
 
@@ -126,10 +187,11 @@ TEST_CASE("client ready reaches server handler; server command reaches client") 
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     std::atomic<bool> gotReady{false};
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
         if (m.action == "ready") {
-            server.registerAgent(client);
+            agent.client = client;
             gotReady = true;
         }
     });
@@ -165,8 +227,9 @@ TEST_CASE("sendToAgentAndWait returns the agent's response") {
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
-        if (m.action == "ready") server.registerAgent(client);
+        if (m.action == "ready") agent.client = client;
     });
     REQUIRE(server.start());
 
@@ -204,8 +267,9 @@ TEST_CASE("sendToAgentAndWait fails fast when the agent disconnects mid-wait") {
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
-        if (m.action == "ready") server.registerAgent(client);
+        if (m.action == "ready") agent.client = client;
         // deliberately never respond to commands
     });
     REQUIRE(server.start());
@@ -242,8 +306,9 @@ TEST_CASE("spontaneous RESPONSE (no requestId) cannot satisfy sendToAgentAndWait
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     server.setMessageHandler([&](const IPCMessage& m, ClientId client) {
-        if (m.action == "ready") server.registerAgent(client);
+        if (m.action == "ready") agent.client = client;
     });
     REQUIRE(server.start());
 
@@ -294,10 +359,11 @@ TEST_CASE("large payload under the 1 MiB frame cap round-trips over the socket")
     ::unlink(path.c_str());
 
     UnixSocketServer server(path);
+    AgentSlot agent(server);
     std::atomic<size_t> rxLen{0};
     server.setMessageHandler([&](const IPCMessage& m, ClientId c) {
         if (m.action == "ready") {
-            server.registerAgent(c);
+            agent.client = c;
         } else {
             rxLen = m.payload.size();
         }
@@ -323,3 +389,167 @@ TEST_CASE("large payload under the 1 MiB frame cap round-trips over the socket")
 }
 
 #endif // !_WIN32
+
+#ifdef _WIN32
+
+TEST_CASE("named pipe client write completes while its reader is pending on a silent server") {
+    if (!pipeAclAdmitsThisProcess()) {
+        return;
+    }
+    NamedPipeServer server(tempPipeName("rdy"));
+    std::atomic<bool> gotReady{false};
+    server.setMessageHandler([&](const IPCMessage& m, ClientId) {
+        if (m.action == "ready") {
+            gotReady = true;
+        }
+    });
+    REQUIRE(server.start());
+
+    NamedPipeClient client(tempPipeName("rdy"));
+    client.setMessageHandler([](const IPCMessage&) {});
+    REQUIRE(client.connect(2000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    const std::optional<bool> sent =
+        runWithDeadline(client, [&] { return client.sendMessage(readyMessage()); });
+    REQUIRE(sent.has_value());
+    CHECK(*sent);
+    CHECK(waitUntil([&] { return gotReady.load(); }));
+    CHECK(client.isConnected());
+
+    client.disconnect();
+    server.stop();
+}
+
+TEST_CASE("named pipe client concurrent sends all arrive intact") {
+    if (!pipeAclAdmitsThisProcess()) {
+        return;
+    }
+    constexpr int THREADS = 8;
+    constexpr int PER_THREAD = 25;
+
+    NamedPipeServer server(tempPipeName("conc"));
+    std::mutex receivedMutex;
+    std::multiset<std::string> received;
+    server.setMessageHandler([&](const IPCMessage& m, ClientId) {
+        std::scoped_lock lock(receivedMutex);
+        received.insert(m.action + "|" + m.payload);
+    });
+    REQUIRE(server.start());
+
+    NamedPipeClient client(tempPipeName("conc"));
+    client.setMessageHandler([](const IPCMessage&) {});
+    REQUIRE(client.connect(2000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    std::atomic<int> succeeded{0};
+    const auto sendAll = [&] {
+        std::vector<std::thread> senders;
+        for (int t = 0; t < THREADS; ++t) {
+            senders.emplace_back([&, t] {
+                for (int i = 0; i < PER_THREAD; ++i) {
+                    IPCMessage m;
+                    m.type = MessageType::RESPONSE;
+                    m.action = "msg_" + std::to_string(t);
+                    m.payload = std::string(1000 + i, static_cast<char>('a' + t));
+                    if (client.sendMessage(m)) {
+                        ++succeeded;
+                    }
+                }
+            });
+        }
+        for (auto& sender : senders) {
+            sender.join();
+        }
+        return true;
+    };
+    const std::optional<bool> finished = runWithDeadline(client, sendAll, 10000);
+    REQUIRE(finished.has_value());
+    CHECK(succeeded.load() == THREADS * PER_THREAD);
+    CHECK(waitUntil([&] {
+        std::scoped_lock lock(receivedMutex);
+        return received.size() == static_cast<size_t>(THREADS * PER_THREAD);
+    }));
+
+    {
+        std::scoped_lock lock(receivedMutex);
+        for (int t = 0; t < THREADS; ++t) {
+            for (int i = 0; i < PER_THREAD; ++i) {
+                const std::string expected = "msg_" + std::to_string(t) + "|" +
+                                             std::string(1000 + i, static_cast<char>('a' + t));
+                CHECK(received.count(expected) == 1);
+            }
+        }
+    }
+
+    client.disconnect();
+    server.stop();
+}
+
+TEST_CASE("named pipe client disconnect returns promptly while its reader is pending") {
+    if (!pipeAclAdmitsThisProcess()) {
+        return;
+    }
+    NamedPipeServer server(tempPipeName("disc"));
+    server.setMessageHandler([](const IPCMessage&, ClientId) {});
+    REQUIRE(server.start());
+
+    NamedPipeClient client(tempPipeName("disc"));
+    client.setMessageHandler([](const IPCMessage&) {});
+    REQUIRE(client.connect(2000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    std::future<void> disconnected = std::async(std::launch::async, [&] { client.disconnect(); });
+    REQUIRE(disconnected.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    CHECK_FALSE(client.isConnected());
+    CHECK_FALSE(client.sendMessage(readyMessage()));
+
+    client.disconnect();
+    server.stop();
+}
+
+TEST_CASE("named pipe server command reaches the client and the reply from its reader thread returns") {
+    if (!pipeAclAdmitsThisProcess()) {
+        return;
+    }
+    NamedPipeServer server(tempPipeName("cmd"));
+    AgentSlot agent(server);
+    server.setMessageHandler([&](const IPCMessage& m, const ClientId client) {
+        if (m.action == "ready") {
+            agent.client = client;
+        }
+    });
+    REQUIRE(server.start());
+
+    NamedPipeClient client(tempPipeName("cmd"));
+    std::atomic<bool> gotCmd{false};
+    client.setMessageHandler([&](const IPCMessage& m) {
+        if (m.type == MessageType::COMMAND) {
+            gotCmd = true;
+            IPCMessage resp;
+            resp.type = MessageType::RESPONSE;
+            resp.action = m.action + "_done";
+            resp.sessionId = m.sessionId;
+            resp.requestId = m.requestId;
+            client.sendMessage(resp);
+        }
+    });
+    REQUIRE(client.connect(2000));
+    sendReady(client);
+    REQUIRE(waitUntil([&] { return server.hasConnectedAgent(); }));
+
+    IPCMessage cmd;
+    cmd.type = MessageType::COMMAND;
+    cmd.action = "configure";
+    cmd.sessionId = "session_1";
+    IPCMessage resp;
+    CHECK(server.sendToAgentAndWait(cmd, resp, 2000));
+    CHECK(gotCmd.load());
+    CHECK(resp.action == "configure_done");
+    CHECK(resp.sessionId == "session_1");
+
+    client.disconnect();
+    server.stop();
+}
+
+#endif

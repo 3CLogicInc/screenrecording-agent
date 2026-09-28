@@ -301,7 +301,7 @@ private:
             } else if (message.action == ipc::protocol::ACTION_GET_STATUS) {
                 handleGetStatus();
             } else if (message.action == ipc::protocol::ACTION_SHUTDOWN) {
-                handleShutdown();
+                handleShutdown(message);
             } else {
                 logger_->warning("Agent", "Unknown command: " + message.action);
             }
@@ -1005,12 +1005,19 @@ private:
         sendSuccess("configured");
     }
 
-    void handleShutdown() {
-        logger_->info("Agent", "Received shutdown command");
+    void handleShutdown(const IPCMessage& message) {
+        std::string endReason = journal::END_SHUTDOWN;
+        const auto payload = nlohmann::json::parse(message.payload, nullptr, false);
+        if (payload.is_object() &&
+            payload.value(ipc::protocol::SHUTDOWN_REASON_KEY, std::string{}) ==
+                journal::END_SESSION_DETACHED) {
+            endReason = journal::END_SESSION_DETACHED;
+        }
+        logger_->info("Agent", "Received shutdown command (" + endReason + ")");
         // Finalize while the pipe is still up so the upload request goes out (Windows logoff path).
         {
             std::scoped_lock lock(sessionMutex_);
-            finalizeAndUploadLocked(/*sendStopResponse=*/false, journal::END_SHUTDOWN);
+            finalizeAndUploadLocked(/*sendStopResponse=*/false, endReason);
         }
         running_ = false;
     }

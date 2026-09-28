@@ -22,6 +22,7 @@ inline constexpr const char* END_WATCHDOG_TIMEOUT = "watchdog_timeout";
 inline constexpr const char* END_MAX_DURATION = "max_duration";
 inline constexpr const char* END_AGENT_CRASH = "agent_crash";
 inline constexpr const char* END_SHUTDOWN = "shutdown";
+inline constexpr const char* END_SESSION_DETACHED = "session_detached";
 inline constexpr const char* END_PERMISSION_REVOKED = "permission_revoked";
 inline constexpr const char* END_DISK_FULL = "disk_full";
 inline constexpr const char* END_SYSTEM_SLEEP = "system_sleep";

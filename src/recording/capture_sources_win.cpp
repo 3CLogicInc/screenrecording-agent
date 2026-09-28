@@ -3,14 +3,42 @@
 #include "logging/log_service.hpp"
 #include "recording/monitor_capture_settings.hpp"
 
+#include <windows.h>
+
 namespace screenrec::capture {
+
+namespace {
+
+bool activeDisplayPathPresent(std::string& detail) {
+    UINT32 paths = 0;
+    UINT32 modes = 0;
+    const LONG status = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &paths, &modes);
+    if (status != ERROR_SUCCESS) {
+        detail = "GetDisplayConfigBufferSizes failed with " + std::to_string(status);
+        return false;
+    }
+    if (paths == 0 || modes == 0) {
+        detail = "Windows reports no active display path for this session";
+        return false;
+    }
+    return true;
+}
+
+}
 
 // OBS 31 matches "monitor_id" against the display alt_id.
 bool createScreenSources(obs_scene_t* scene, const std::vector<MonitorInfo>& monitors,
     std::vector<obs_sceneitem_t*>& sceneItems,
     std::vector<obs_source_t*>& screenCaptures,
     obs_source_t** displaySource,
-    const Reporter& /*reportError*/, const Logger& logger) {
+    const Reporter& reportError, const Logger& logger) {
+    std::string detail;
+    if (!activeDisplayPathPresent(detail)) {
+        logger->error("RecordingEngine", detail + "; refusing to create monitor capture");
+        reportError("no_display: " + detail);
+        return false;
+    }
+
     logger->debug("RecordingEngine",
         "Creating monitor capture sources for " + std::to_string(monitors.size()) + " monitor(s)");
 

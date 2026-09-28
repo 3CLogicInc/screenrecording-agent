@@ -25,6 +25,7 @@ public:
     void stop() override;
 
     bool sendMessage(ClientId client, const IPCMessage& message) override;
+    [[nodiscard]] std::uint32_t clientProcessId(ClientId client) const override;
 
 private:
     void serverThread();
@@ -63,6 +64,8 @@ private:
 
     std::string pipeName_;
     HANDLE hPipe_;
+    HANDLE hStopEvent_;
+    std::mutex sendMutex_;
     std::atomic<bool> connected_{false};
     std::thread readerThread_;
     MessageHandler messageHandler_;
